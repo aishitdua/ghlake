@@ -35,7 +35,7 @@ data.gharchive.org/YYYY-MM-DD-H.json.gz      (one file per hour)
   └─► static HF Space: DuckDB-WASM in the browser reads gold from the dataset
 ```
 
-Every hour at :17, [hourly.yml](.github/workflows/hourly.yml) pulls the dbt state and the silver days it will touch from the dataset, loads any of the last 6 hours not yet loaded, runs `dbt build` (models plus grain, not-null and a 3-hour freshness test), and pushes the result. A concurrency group keeps runs from overlapping. Re-running an hour replaces its partition. To backfill, run the workflow by hand with a start and end hour.
+Every hour at :23, [hourly.yml](.github/workflows/hourly.yml) pulls the dbt state and the silver days it will touch from the dataset, loads any of the last 6 hours not yet loaded, runs `dbt build` (models plus grain, not-null and a 3-hour freshness test), and pushes the result. A concurrency group keeps runs from overlapping. Re-running an hour replaces its partition. To backfill, run the workflow by hand with a start and end hour.
 
 Language comes only from fork events, because GH Archive payloads no longer carry a repo language anywhere else. Contributors are non-bot actors who push, open PRs or issues, or review; "first time" means first seen since the lake started, "returned" means seen before.
 
