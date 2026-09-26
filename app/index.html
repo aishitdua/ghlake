@@ -26,9 +26,12 @@
   textarea { width: 100%; box-sizing: border-box; font: 13px ui-monospace, monospace; background: var(--bg);
     color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
   button { margin: 8px 0; padding: 6px 16px; }
-  .out { overflow-x: auto; max-height: 420px; }
+  .out { overflow: auto; max-height: 400px; border: 1px solid var(--line); border-radius: 6px; }
+  .out:empty { display: none; }
   table { border-collapse: collapse; font-size: 13px; }
-  td, th { border-bottom: 1px solid var(--line); padding: 3px 10px; text-align: left; white-space: nowrap; }
+  td, th { border-bottom: 1px solid var(--line); padding: 3px 10px; text-align: left; white-space: nowrap;
+    max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
+  th { position: sticky; top: 0; background: var(--bg); }
 </style>
 </head>
 <body>
@@ -45,16 +48,19 @@
   </div>
   <p id="warn"></p>
   <div class="grid">
-    <section><h2>Events per hour by type, last 72 hours</h2><div id="c1" class="chart"></div></section>
-    <section><h2>Top movers: stars on the last full day vs prior 7-day average</h2><div id="c2" class="chart"></div></section>
-    <section><h2>Contributors per day: first seen vs returned</h2><div id="c3" class="chart"></div></section>
-    <section><h2>Languages of forked repos, last 14 days</h2><div id="c4" class="chart"></div></section>
+    <section><h2>Most starred repos, last 7 days</h2><div id="starred" class="chart"></div></section>
+    <section><h2>Most forked repos, last 7 days</h2><div id="forked" class="chart"></div></section>
+    <section><h2>Top movers: stars on the last full day vs prior 7-day average</h2><div id="movers" class="chart"></div></section>
+    <section><h2>Languages of forked repos, last 14 days</h2><div id="languages" class="chart"></div></section>
+    <section><h2>Contributors per day: first seen vs returned</h2><div id="contributors" class="chart"></div></section>
+    <section><h2>Events per hour by type, last 72 hours</h2><div id="events_hourly" class="chart"></div></section>
   </div>
   <h2>Query it yourself</h2>
   <p class="muted">DuckDB running in your browser over the gold tables:
-    <span id="tables"></span>. Select queries, first 1000 rows.</p>
+    <span id="tables"></span>. Select queries; results stop at 100 rows.</p>
   <textarea id="sql" rows="4">select repo_name, stars_7d, stars_per_day from star_velocity order by stars_7d desc</textarea>
   <button id="run">Run</button>
+  <p id="rowcount" class="muted"></p>
   <div id="out" class="out"></div>
 </main>
 <script type="module">
@@ -106,7 +112,25 @@ const chart = (id, values, spec) => vegaEmbed(`#${id}`, {
   $schema: "https://vega.github.io/schema/vega-lite/v6.json", width: "container", height: 280,
   background: "transparent", data: { values }, ...spec }, opts);
 
-chart("c1", await rows(`
+const bars = (id, values, field, title) => chart(id, values, {
+  mark: "bar",
+  encoding: { y: { field: "repo_name", type: "nominal", sort: "-x", title: null },
+    x: { field, type: "quantitative", title },
+    tooltip: [{ field: "repo_name" }, { field, title }] } });
+
+bars("starred", await rows(`
+  select repo_name, stars_7d::int as stars from star_velocity order by stars_7d desc limit 15`),
+  "stars", "stars");
+
+bars("forked", await rows(`
+  select arg_max(repo_name, dt) as repo_name, sum(forks)::int as forks from repo_daily_30d
+  where dt > (select max(dt) from repo_daily_30d) - 7
+  group by repo_id order by forks desc limit 15`), "forks", "forks");
+
+bars("movers", await rows(`select repo_name, delta from top_movers order by delta desc limit 15`),
+  "delta", "stars above 7-day average");
+
+chart("events_hourly", await rows(`
   with t as (select dt + hour * interval 1 hour as ts, event_type, events::int as events from event_type_hourly)
   select strftime(ts, '%Y-%m-%dT%H:00:00') as ts, event_type, events from t
   where ts > (select max(ts) from t) - interval 72 hour`), {
@@ -115,13 +139,7 @@ chart("c1", await rows(`
     y: { field: "events", type: "quantitative", stack: true },
     color: { field: "event_type", type: "nominal", title: null } } });
 
-chart("c2", await rows(`select repo_name, delta from top_movers order by delta desc limit 15`), {
-  mark: "bar",
-  encoding: { y: { field: "repo_name", type: "nominal", sort: "-x", title: null },
-    x: { field: "delta", type: "quantitative", title: "stars above 7-day average" },
-    tooltip: [{ field: "repo_name" }, { field: "delta" }] } });
-
-chart("c3", await rows(`
+chart("contributors", await rows(`
   unpivot (select strftime(dt, '%Y-%m-%d') as dt, first_time::int as first_time, returned::int as returned
     from contributor_churn) on first_time, returned into name kind value n`), {
   mark: "bar",
@@ -129,7 +147,7 @@ chart("c3", await rows(`
     y: { field: "n", type: "quantitative", title: "contributors" },
     color: { field: "kind", type: "nominal", title: null } } });
 
-chart("c4", await rows(`
+chart("languages", await rows(`
   with top as (select language from language_daily group by 1 order by sum(forks) desc limit 8)
   select strftime(dt, '%Y-%m-%d') as dt, language, forks::int as forks from language_daily
   where language in (from top) and dt >= (select max(dt) from language_daily) - 13`), {
@@ -141,7 +159,8 @@ chart("c4", await rows(`
 $("run").onclick = async () => {
   const out = $("out");
   try {
-    const t = await con.query(`from (${$("sql").value.replace(/;\s*$/, "")}) limit 1000`);
+    const t = await con.query(`from (${$("sql").value.replace(/;\s*$/, "")}) limit 100`);
+    $("rowcount").textContent = `${t.numRows} row${t.numRows === 1 ? "" : "s"}${t.numRows === 100 ? " (limit reached)" : ""}`;
     const cols = t.schema.fields.map((f) => f.name);
     const isTime = Object.fromEntries(t.schema.fields.map((f) => [f.name, /Date|Timestamp/.test(String(f.type))]));
     const show = (c, v) => isTime[c] && v != null ? new Date(Number(v)).toISOString().slice(0, 19).replace("T00:00:00", "") : plain(v);
@@ -150,6 +169,7 @@ $("run").onclick = async () => {
       t.toArray().map((r) => `<tr>${cols.map((c) => `<td>${esc(show(c, r[c]))}</td>`).join("")}</tr>`).join("") +
       "</table>";
   } catch (e) {
+    $("rowcount").textContent = "";
     out.textContent = String(e.message ?? e);
   }
 };
