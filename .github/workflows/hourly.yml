@@ -1,0 +1,56 @@
+name: hourly
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "Backfill start, YYYY-MM-DDTHH UTC (blank = last 6 hours)"
+        required: false
+      end:
+        description: "Backfill end, YYYY-MM-DDTHH UTC"
+        required: false
+concurrency:
+  group: ghlake-load
+  cancel-in-progress: false
+permissions:
+  contents: read
+jobs:
+  load:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      START: ${{ inputs.start }}
+      END: ${{ inputs.end }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen --no-dev
+      - name: Pick hours
+        run: |
+          if [ -n "$START$END" ] && { [ -z "$START" ] || [ -z "$END" ]; }; then
+            echo "::error::give both start and end, or neither"; exit 1
+          fi
+          if [ -z "$START" ]; then
+            echo "START=$(date -u -d '6 hours ago' +%Y-%m-%dT%H)" >> "$GITHUB_ENV"
+            echo "END=$(date -u -d '1 hour ago' +%Y-%m-%dT%H)" >> "$GITHUB_ENV"
+          fi
+      - id: pull
+        run: uv run python -m ghlake.publish pull "$START" "$END"
+      - run: uv run python -m ghlake.ingest backfill "$START" "$END"
+      - id: dbt
+        if: always() && steps.pull.outcome == 'success'
+        run: uv run dbt build --project-dir dbt --profiles-dir dbt
+      - if: inputs.start == ''
+        run: uv run dbt source freshness --project-dir dbt --profiles-dir dbt
+      - if: always() && steps.dbt.outcome == 'success'
+        run: uv run python -m ghlake.publish push
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bronze-${{ github.run_id }}
+          path: data/bronze
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: ignore

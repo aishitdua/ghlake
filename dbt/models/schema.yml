@@ -1,0 +1,37 @@
+models:
+  - name: repo_daily
+    description: Activity per repo per UTC day.
+    data_tests:
+      - unique: {column_name: "dt || '/' || repo_id"}
+    columns:
+      - {name: dt, data_tests: [not_null]}
+      - {name: repo_id, data_tests: [not_null]}
+  - name: event_type_hourly
+    data_tests:
+      - unique: {column_name: "dt || '/' || hour || '/' || event_type"}
+    columns:
+      - {name: dt, data_tests: [not_null]}
+      - {name: hour, data_tests: [not_null]}
+      - {name: event_type, data_tests: [not_null]}
+  - name: language_daily
+    description: Forks per repo language per day.
+    data_tests:
+      - unique: {column_name: "dt || '/' || language"}
+    columns:
+      - {name: dt, data_tests: [not_null]}
+  - name: contributors_daily
+    columns:
+      - {name: dt, data_tests: [unique, not_null]}
+  - name: contributor_seen
+    description: First and last active day per human contributor since the lake started.
+    columns:
+      - {name: actor_id, data_tests: [unique, not_null]}
+  - name: contributor_churn
+    columns:
+      - {name: dt, data_tests: [unique, not_null]}
+  - name: star_velocity
+    columns:
+      - {name: repo_id, data_tests: [unique, not_null]}
+  - name: top_movers
+    columns:
+      - {name: repo_id, data_tests: [unique, not_null]}

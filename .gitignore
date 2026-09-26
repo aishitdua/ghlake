@@ -1,0 +1,15 @@
+data/
+.venv/
+__pycache__/
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+.user.yml
+*.pyc
+.ruff_cache/
+.pytest_cache/
+logs/
+BRIEF.md
+STATUS.md
+RESUME_LINE.md
+.playwright-mcp/

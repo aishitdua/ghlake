@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ghlake</title>
+<script src="https://cdn.jsdelivr.net/npm/vega@6.4.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-lite@6.4.3"></script>
+<script src="https://cdn.jsdelivr.net/npm/vega-embed@7.3.0"></script>
+<style>
+  :root { --bg: #fff; --fg: #1f2328; --muted: #59636e; --line: #d1d9e0; --warn: #9a6700; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0d1117; --fg: #e6edf3; --muted: #9198a1; --line: #3d444d; --warn: #d29922; }
+  }
+  body { background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; margin: 0; }
+  main { max-width: 1200px; margin: 0 auto; padding: 16px; }
+  a { color: inherit; }
+  .muted { color: var(--muted); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 16px 0; }
+  .stats div { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; }
+  .stats b { display: block; font-size: 1.5em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 24px; }
+  .chart { width: 100%; min-height: 300px; }
+  h2 { font-size: 1.05em; margin: 8px 0; }
+  #warn { color: var(--warn); }
+  textarea { width: 100%; box-sizing: border-box; font: 13px ui-monospace, monospace; background: var(--bg);
+    color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
+  button { margin: 8px 0; padding: 6px 16px; }
+  .out { overflow-x: auto; max-height: 420px; }
+  table { border-collapse: collapse; font-size: 13px; }
+  td, th { border-bottom: 1px solid var(--line); padding: 3px 10px; text-align: left; white-space: nowrap; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ghlake</h1>
+  <p class="muted">Hourly lakehouse over <a href="https://www.gharchive.org">GH Archive</a>: every public GitHub event.
+    <a href="https://huggingface.co/datasets/aishitdua/ghlake">Dataset</a> ·
+    <a href="https://github.com/aishitdua/ghlake">Pipeline</a></p>
+  <div class="stats">
+    <div>Newest hour loaded<b id="newest">loading…</b><span id="behind" class="muted"></span></div>
+    <div>Hours loaded<b id="hours">…</b></div>
+    <div>Events processed<b id="events">…</b></div>
+    <div>Median ingest time<b id="secs">…</b></div>
+  </div>
+  <p id="warn"></p>
+  <div class="grid">
+    <section><h2>Events per hour by type, last 72 hours</h2><div id="c1" class="chart"></div></section>
+    <section><h2>Top movers: stars on the last full day vs prior 7-day average</h2><div id="c2" class="chart"></div></section>
+    <section><h2>Contributors per day: first seen vs returned</h2><div id="c3" class="chart"></div></section>
+    <section><h2>Languages of forked repos, last 14 days</h2><div id="c4" class="chart"></div></section>
+  </div>
+  <h2>Query it yourself</h2>
+  <p class="muted">DuckDB running in your browser over the gold tables:
+    <span id="tables"></span>. Select queries, first 1000 rows.</p>
+  <textarea id="sql" rows="4">select repo_name, stars_7d, stars_per_day from star_velocity order by stars_7d desc</textarea>
+  <button id="run">Run</button>
+  <div id="out" class="out"></div>
+</main>
+<script type="module">
+import * as duckdb from "https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.32.0/+esm";
+
+const GOLD = new URL(new URLSearchParams(location.search).get("gold")
+  ?? "https://huggingface.co/datasets/aishitdua/ghlake/resolve/main/gold/", location.href);
+const TABLES = ["event_type_hourly", "language_daily", "contributor_churn", "star_velocity",
+  "top_movers", "run_log", "repo_daily_30d"];
+const $ = (id) => document.getElementById(id);
+
+const bundle = await duckdb.selectBundle(duckdb.getJsDelivrBundles());
+const workerUrl = URL.createObjectURL(
+  new Blob([`importScripts("${bundle.mainWorker}");`], { type: "text/javascript" }));
+const db = new duckdb.AsyncDuckDB(new duckdb.VoidLogger(), new Worker(workerUrl));
+await db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+const con = await db.connect();
+
+await Promise.all(TABLES.map(async (t) => {
+  const res = await fetch(new URL(`${t}.parquet`, GOLD), { cache: "no-cache" });
+  if (!res.ok) throw new Error(`${t}: HTTP ${res.status}`);
+  await db.registerFileBuffer(`${t}.parquet`, new Uint8Array(await res.arrayBuffer()));
+  await con.query(`create table ${t} as from '${t}.parquet'`);
+}));
+$("tables").textContent = TABLES.join(", ");
+
+const rows = async (sql) => (await con.query(sql)).toArray().map((r) => r.toJSON());
+const plain = (v) => typeof v === "bigint" ? Number(v) : v;
+
+const [s] = await rows(`
+  with r as (from run_log qualify row_number() over (partition by hour order by logged_at desc) = 1)
+  select strftime(max(hour), '%b %d, %H:00 UTC') as newest,
+    (epoch(now()) - epoch(max(hour) + interval 1 hour)) / 3600 as behind,
+    count(*)::int as hours, sum(rows_out)::double as events, median(seconds) as secs
+  from r where status = 'ok'`);
+if (!s.hours) {
+  $("newest").textContent = "no data yet";
+} else {
+  $("newest").textContent = s.newest;
+  $("behind").textContent = `${s.behind.toFixed(1)} h behind`;
+  $("hours").textContent = s.hours.toLocaleString();
+  $("events").textContent = s.events.toLocaleString();
+  $("secs").textContent = `${s.secs.toFixed(1)} s`;
+  if (s.behind > 3) $("warn").textContent = "Data is more than 3 hours stale; the pipeline may be failing.";
+}
+
+const opts = { actions: false, theme: matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : undefined };
+const chart = (id, values, spec) => vegaEmbed(`#${id}`, {
+  $schema: "https://vega.github.io/schema/vega-lite/v6.json", width: "container", height: 280,
+  background: "transparent", data: { values }, ...spec }, opts);
+
+chart("c1", await rows(`
+  with t as (select dt + hour * interval 1 hour as ts, event_type, events::int as events from event_type_hourly)
+  select strftime(ts, '%Y-%m-%dT%H:00:00') as ts, event_type, events from t
+  where ts > (select max(ts) from t) - interval 72 hour`), {
+  mark: "area",
+  encoding: { x: { field: "ts", type: "temporal", title: null },
+    y: { field: "events", type: "quantitative", stack: true },
+    color: { field: "event_type", type: "nominal", title: null } } });
+
+chart("c2", await rows(`select repo_name, delta from top_movers order by delta desc limit 15`), {
+  mark: "bar",
+  encoding: { y: { field: "repo_name", type: "nominal", sort: "-x", title: null },
+    x: { field: "delta", type: "quantitative", title: "stars above 7-day average" },
+    tooltip: [{ field: "repo_name" }, { field: "delta" }] } });
+
+chart("c3", await rows(`
+  unpivot (select strftime(dt, '%Y-%m-%d') as dt, first_time::int as first_time, returned::int as returned
+    from contributor_churn) on first_time, returned into name kind value n`), {
+  mark: "bar",
+  encoding: { x: { field: "dt", type: "ordinal", title: null },
+    y: { field: "n", type: "quantitative", title: "contributors" },
+    color: { field: "kind", type: "nominal", title: null } } });
+
+chart("c4", await rows(`
+  with top as (select language from language_daily group by 1 order by sum(forks) desc limit 8)
+  select strftime(dt, '%Y-%m-%d') as dt, language, forks::int as forks from language_daily
+  where language in (from top) and dt >= (select max(dt) from language_daily) - 13`), {
+  mark: { type: "line", point: true },
+  encoding: { x: { field: "dt", type: "ordinal", title: null },
+    y: { field: "forks", type: "quantitative" },
+    color: { field: "language", type: "nominal", title: null } } });
+
+$("run").onclick = async () => {
+  const out = $("out");
+  try {
+    const t = await con.query(`from (${$("sql").value.replace(/;\s*$/, "")}) limit 1000`);
+    const cols = t.schema.fields.map((f) => f.name);
+    const isTime = Object.fromEntries(t.schema.fields.map((f) => [f.name, /Date|Timestamp/.test(String(f.type))]));
+    const show = (c, v) => isTime[c] && v != null ? new Date(Number(v)).toISOString().slice(0, 19).replace("T00:00:00", "") : plain(v);
+    const esc = (v) => String(v ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" })[c]);
+    out.innerHTML = `<table><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join("")}</tr>` +
+      t.toArray().map((r) => `<tr>${cols.map((c) => `<td>${esc(show(c, r[c]))}</td>`).join("")}</tr>`).join("") +
+      "</table>";
+  } catch (e) {
+    out.textContent = String(e.message ?? e);
+  }
+};
+</script>
+</body>
+</html>

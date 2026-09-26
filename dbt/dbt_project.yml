@@ -1,0 +1,7 @@
+name: ghlake
+version: "1.0"
+profile: ghlake
+model-paths: [models]
+models:
+  ghlake:
+    +materialized: table

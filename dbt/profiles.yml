@@ -1,0 +1,7 @@
+ghlake:
+  target: prod
+  outputs:
+    prod:
+      type: duckdb
+      path: "{{ env_var('GHLAKE_DATA', 'data') }}/state/ghlake.duckdb"
+      threads: 4
