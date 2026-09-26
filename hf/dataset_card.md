@@ -20,4 +20,7 @@ Every public GitHub event from [GH Archive](https://www.gharchive.org), loaded h
 
 ```sql
 select * from 'hf://datasets/aishitdua/ghlake/gold/star_velocity.parquet' limit 10;
+
+-- silver: glob one day at a time; a glob over every hour folder hits the Hub's API rate limit
+select event_type, count(*) from 'hf://datasets/aishitdua/ghlake/silver/dt=2026-09-25/*/*.parquet' group by 1;
 ```
