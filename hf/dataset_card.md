@@ -15,12 +15,14 @@ configs:
 Every public GitHub event from [GH Archive](https://www.gharchive.org), loaded hourly by
 [github.com/aishitdua/ghlake](https://github.com/aishitdua/ghlake).
 
-- `silver/dt=YYYY-MM-DD/hour=HH/events.parquet`: one row per event, deduplicated on `event_id`.
+- `silver/dt=YYYY-MM-DD/hour=H/events.parquet`: one row per event, deduplicated on `event_id`.
 - `gold/*.parquet`: daily and hourly aggregates. `gold/stats.json` has the running totals.
 
-```sql
-select * from 'hf://datasets/aishitdua/ghlake/gold/star_velocity.parquet' limit 10;
+`catalog.duckdb` holds views (`silver.events`, `gold.*`) over the Parquet files, rebuilt every run:
 
--- silver: glob one day at a time; a glob over every hour folder hits the Hub's API rate limit
-select event_type, count(*) from 'hf://datasets/aishitdua/ghlake/silver/dt=2026-09-25/*/*.parquet' group by 1;
+```sql
+attach 'hf://datasets/aishitdua/ghlake/catalog.duckdb' as ghlake;
+select repo_name, stars_7d from ghlake.gold.star_velocity limit 10;
+-- filter silver on dt (and hour) so DuckDB reads only those files
+select event_type, count(*) from ghlake.silver.events where dt = '2026-09-25' group by 1;
 ```

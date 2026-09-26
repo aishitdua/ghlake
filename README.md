@@ -12,10 +12,12 @@ An hourly lakehouse over [GH Archive](https://www.gharchive.org), the public rec
 ![newest](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Faishitdua%2Fghlake%2Fresolve%2Fmain%2Fgold%2Fstats.json&query=%24.newest_hour&label=newest%20hour)
 ![last run](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fhuggingface.co%2Fdatasets%2Faishitdua%2Fghlake%2Fresolve%2Fmain%2Fgold%2Fstats.json&query=%24.last_run&label=last%20run)
 
-Query it from anywhere with DuckDB, no key needed:
+Query it from anywhere with DuckDB, no key needed. The dataset publishes a small catalog of views over its Parquet files:
 
 ```sql
-select repo_name, stars_7d from 'hf://datasets/aishitdua/ghlake/gold/star_velocity.parquet' limit 10;
+attach 'hf://datasets/aishitdua/ghlake/catalog.duckdb' as ghlake;
+select repo_name, stars_7d from ghlake.gold.star_velocity limit 10;
+select event_type, count(*) from ghlake.silver.events where dt = '2026-09-25' group by 1;
 ```
 
 ## How it works
@@ -28,7 +30,8 @@ data.gharchive.org/YYYY-MM-DD-H.json.gz      (one file per hour)
   │ dbt-duckdb (dbt/models): incremental, recomputes only the days touched
   ├─► gold: repo_daily, event_type_hourly, language_daily, star_velocity,
   │         top_movers, contributor_churn, run_log
-  │ ghlake/publish.py: push silver + gold + dbt state to the HF dataset
+  │ ghlake/publish.py: push silver + gold + dbt state to the HF dataset,
+  │   then catalog.duckdb: views silver.events, gold.* over those files
   └─► static HF Space: DuckDB-WASM in the browser reads gold from the dataset
 ```
 

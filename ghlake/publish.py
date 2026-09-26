@@ -13,6 +13,8 @@ from huggingface_hub.errors import EntryNotFoundError, RepositoryNotFoundError
 from ghlake.ingest import DATA, STATE, parse_hour
 
 REPO = os.environ.get("GHLAKE_HF_REPO", "aishitdua/ghlake")
+HUB = f"hf://datasets/{REPO}"
+CATALOG = "catalog.duckdb"
 GOLD_TABLES = [
     "event_type_hourly",
     "language_daily",
@@ -84,15 +86,42 @@ def export(data: Path = DATA) -> dict:
     return stats
 
 
+def catalog(files: list[str], data: Path = DATA) -> Path:
+    path = data / CATALOG
+    path.unlink(missing_ok=True)
+    con = duckdb.connect(str(path))
+    con.execute("create schema silver; create schema gold")
+    # explicit file lists: a glob costs one Hub API call per folder and hits the rate limit
+    for view, prefix in [("silver.events", "silver/"), ("gold.repo_daily", "gold/repo_daily/")]:
+        urls = sorted(
+            f"{HUB}/{f}" for f in files if f.startswith(prefix) and f.endswith(".parquet")
+        )
+        con.execute(f"create view {view} as from read_parquet({urls!r}, hive_partitioning = true)")
+    for t in [*GOLD_TABLES, "repo_daily_30d"]:
+        con.execute(f"create view gold.{t} as from '{HUB}/gold/{t}.parquet'")
+    con.close()
+    return path
+
+
 def push(data: Path = DATA) -> None:
     stats = export(data)
     print(stats)
-    HfApi().upload_folder(
+    api = HfApi()
+    message = f"load through {stats['newest_hour']}"
+    api.upload_folder(
         repo_id=REPO,
         repo_type="dataset",
         folder_path=data,
         allow_patterns=["silver/**", "gold/**", STATE],
-        commit_message=f"load through {stats['newest_hour']}",
+        commit_message=message,
+    )
+    files = api.list_repo_files(REPO, repo_type="dataset")
+    api.upload_file(
+        path_or_fileobj=catalog(files, data),
+        path_in_repo=CATALOG,
+        repo_id=REPO,
+        repo_type="dataset",
+        commit_message=f"catalog for {message}",
     )
 
 
